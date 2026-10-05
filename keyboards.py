@@ -8,11 +8,29 @@ def main_menu():
     builder.button(text="🛒 Купить криптовалюту", callback_data="buy_crypto", style="success")
     builder.button(text="⭐ Отзывы", callback_data="reviews_page_0")
     builder.button(text="💰 Продать криптовалюту", callback_data="sell_crypto", style="danger")
-    builder.button(text="📄 Пользовательское соглашение", callback_data="terms")
+    builder.button(text="❓ FAQ", callback_data="faq")
     builder.button(text="👤 Профиль пользователя", callback_data="ref_profile")
     builder.button(text="📢 Обновления", callback_data="updates")
     builder.button(text="⭐ Купить ЗВЕЗДЫ TELEGRAM!", callback_data="stars_shop")
     builder.adjust(2, 2, 2, 1)
+    return builder.as_markup()
+
+
+
+def faq_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="Почему так дешево?", callback_data="faq_why_cheap")
+    builder.button(text="Пользовательское соглашение", callback_data="faq_terms")
+    builder.button(text="Реклама в боте", callback_data="faq_ads")
+    builder.button(text="🔙 Назад", callback_data="back_to_main")
+    builder.adjust(1)
+    return builder.as_markup()
+
+
+def faq_back_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔙 Назад", callback_data="faq")
+    builder.adjust(1)
     return builder.as_markup()
 
 
@@ -56,6 +74,7 @@ def payment_methods():
     builder.button(text="🟨 Т-Банк (T-Pay)", callback_data="pay_SberPay")
     builder.button(text="💳 Банковская карта", callback_data="pay_Карта")
     builder.button(text="🪙 Криптовалюта", callback_data="pay_Криптовалюта")
+    builder.button(text="💰 Баланс профиля", callback_data="pay_balance")
     builder.button(text="🔙 Отмена", callback_data="back_to_main")
     builder.adjust(1)
     return builder.as_markup()
@@ -81,8 +100,15 @@ def profile_keyboard():
     builder = InlineKeyboardBuilder()
     builder.button(text="📋 Ваши заказы", callback_data="orders_list")
     builder.button(text="💳 Пополнить баланс", callback_data="topup_start")
+    builder.button(text="🎟 Использовать купон", callback_data="coupon_start")
     builder.button(text="🔙 Назад", callback_data="back_to_main")
     builder.adjust(1)
+    return builder.as_markup()
+
+
+def coupon_cancel_keyboard():
+    builder = InlineKeyboardBuilder()
+    builder.button(text="🔙 Отмена", callback_data="coupon_cancel")
     return builder.as_markup()
 
 

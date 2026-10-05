@@ -67,6 +67,10 @@ PAYMENT_CHECK_INTERVAL = 10
 # ========== МИНИМАЛЬНАЯ СУММА ==========
 MIN_USD = 6
 MIN_RUB = 500
+MIN_BUY_USD = 10
+MIN_BUY_RUB = 1000
+MIN_BUY_TRX_USD = 5
+MIN_BUY_TRX_RUB = 500
 
 # ========== НАЦЕНКИ И СКИДКИ ==========
 SELL_MULTIPLIER = 0.85

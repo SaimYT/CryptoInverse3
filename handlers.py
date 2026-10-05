@@ -14,22 +14,25 @@ from aiogram.types import Message, CallbackQuery, FSInputFile
 
 from keyboards import (
     main_menu, crypto_list_sell, crypto_list_buy, payment_methods,
-    paid_button, sell_paid_button, back_to_main, support_button,
+    paid_button, sell_paid_button, back_to_main, faq_keyboard, faq_back_keyboard, support_button,
     profile_keyboard, topup_cancel, reviews_keyboard,
-    orders_list_keyboard, order_detail_keyboard, updates_keyboard, stars_delivery_keyboard, stars_payment_confirm_keyboard
+    orders_list_keyboard, order_detail_keyboard, updates_keyboard, stars_delivery_keyboard,
+    stars_payment_confirm_keyboard, coupon_cancel_keyboard
 )
 from utils import (
     get_crypto_prices, get_sol_balance, get_trc20_balance, get_ton_balance
 )
 from database import (
     create_user, count_referrals, get_referrals, get_referrer,
-    add_balance, get_balance, create_order, update_order_status,
+    add_balance, get_balance, create_order, update_order_status, redeem_coupon,
+    pay_order_with_balance,
     update_order_data, get_order, get_user_orders, delete_order, get_all_user_ids
 )
 from reviews import REVIEWS, TOTAL_REVIEWS, get_review_by_id
 from config import (
     WALLETS, COIN_NAMES, PAYMENT_DETAILS, PAYMENT_TIMEOUT, PAYMENT_CHECK_INTERVAL,
-    SUPPORT_USERNAME, MIN_USD, MIN_RUB, SELL_MULTIPLIER, BUY_MULTIPLIER,
+    SUPPORT_USERNAME, MIN_USD, MIN_RUB, MIN_BUY_USD, MIN_BUY_RUB,
+    MIN_BUY_TRX_USD, MIN_BUY_TRX_RUB, SELL_MULTIPLIER, BUY_MULTIPLIER,
     BOT_USERNAME, REFERRAL_BONUS_PERCENT, REFERRAL_SIGNUP_BONUS,
     REVIEWS_PER_PAGE, ADMIN_IDS, ADMIN_USERNAMES
 )
@@ -54,6 +57,10 @@ class BuyStates(StatesGroup):
 
 class TopUpStates(StatesGroup):
     waiting_amount = State()
+
+
+class CouponStates(StatesGroup):
+    waiting_code = State()
 
 
 class StarsStates(StatesGroup):
@@ -85,6 +92,31 @@ async def show_loading(message: Message, seconds: int = 2):
 def generate_number() -> str:
     digits = "".join(random.choices(string.digits, k=10))
     return f"CI-{digits}"
+
+
+def read_coupons():
+    coupon_file = Path(__file__).resolve().parent / "ticket.txt"
+    coupons = {}
+    if not coupon_file.is_file():
+        return coupons
+
+    line_pattern = re.compile(r"^\s*(.+?)\s*-\s*(\d+(?:[.,]\d{1,2})?)\s*(?:rub|₽)\s*$", re.IGNORECASE)
+    try:
+        with coupon_file.open("r", encoding="utf-8-sig") as file:
+            for line in file:
+                match = line_pattern.fullmatch(line)
+                if not match:
+                    continue
+                code = match.group(1).strip()
+                try:
+                    amount = Decimal(match.group(2).replace(",", "."))
+                except Exception:
+                    continue
+                if code and amount.is_finite() and amount > 0:
+                    coupons[code.casefold()] = (code, float(amount))
+    except OSError:
+        return {}
+    return coupons
 
 
 def status_emoji(status: str) -> str:
@@ -278,17 +310,30 @@ async def cmd_broadcast(message: Message):
     await status.edit_text(f"✅ Рассылка завершена.\nУспешно: {sent}\nНе доставлено: {failed}")
 
 
+def build_terms_text():
+    return (
+        "📄 <b>Пользовательское соглашение</b>\n\n"
+        "1. Отправляя криптовалюту, вы подтверждаете, что она принадлежит вам или что вы вправе ею распоряжаться.\n"
+        "2. Курс фиксируется в момент создания заявки; итоговая сумма указывается в заявке.\n"
+        "3. Средства зачисляются или заявка исполняется после необходимых подтверждений сети и проверки платежа.\n"
+        f"4. Поддержка: @{SUPPORT_USERNAME}.\n"
+        "5. Возврат средств не может быть произведён ни при каких обстоятельствах. Поддержка может по своему "
+        "усмотрению предложить купон или иной вариант урегулирования.\n"
+        "6. Ориентировочный срок передачи криптовалюты или Telegram Stars — до 24 часов; в отдельных случаях "
+        "обработка может занять до 7 рабочих дней. По статусу заказа можно обратиться в поддержку.\n"
+        "7. Поддержка рассматривает обращения корректно и помогает разобраться с вопросами по заказу.\n"
+        "8. После подтверждения транзакции сеть обычно не позволяет отменить перевод. По вопросам статуса и спорным "
+        "ситуациям обратитесь в поддержку; ответственность сторон определяется условиями заказа и применимыми требованиями.\n"
+        "9. После передачи или продажи криптовалюты CryptoInverse не несёт ответственности за неё и её дальнейшее "
+        "использование, хранение, перевод или утрату.\n"
+        "10. Поддержка и администрация вправе отказать в предоставлении доказательств и иной запрашиваемой информации."
+    )
+
+
 @router.message(Command("terms"))
 async def cmd_terms(message: Message, state: FSMContext):
     await state.clear()
-    terms_text = (
-        "📄 <b>Пользовательское соглашение</b>\n\n"
-        "1. Отправляя криптовалюту, вы подтверждаете, что она принадлежит вам.\n"
-        "2. Курс фиксируется в момент создания заявки.\n"
-        "3. Средства зачисляются после подтверждения сети.\n"
-        f"4. Поддержка: @{SUPPORT_USERNAME}"
-    )
-    await message.answer(terms_text, reply_markup=back_to_main())
+    await message.answer(build_terms_text(), reply_markup=faq_back_keyboard())
 
 
 @router.message(Command("sell"))
@@ -344,21 +389,57 @@ async def back_main(callback: CallbackQuery, state: FSMContext):
     await callback.answer()
 
 
-@router.callback_query(F.data == "terms")
-async def show_terms(callback: CallbackQuery):
+@router.callback_query(F.data == "faq")
+async def show_faq(callback: CallbackQuery):
     await safe_delete(callback.message)
-    terms_text = (
-        "📄 <b>Пользовательское соглашение</b>\n\n"
-        "1. Отправляя криптовалюту, вы подтверждаете, что она принадлежит вам.\n"
-        "2. Курс фиксируется в момент создания заявки.\n"
-        "3. Средства зачисляются после подтверждения сети.\n"
-        f"4. Поддержка: @{SUPPORT_USERNAME}"
+    text = (
+        "📚 <b>База знаний</b>\n\n"
+        "Нажмите на интересующий вас вопрос ниже!\n\n"
+        f'Если вы не нашли подходящего вопроса, напишите в поддержку: @{SUPPORT_USERNAME}'
     )
-    await callback.message.answer(terms_text, reply_markup=back_to_main())
+    await callback.message.answer(text, reply_markup=faq_keyboard())
     await callback.answer()
 
 
-# ========== ПРОФИЛЬ ==========
+@router.callback_query(F.data == "faq_why_cheap")
+async def faq_why_cheap(callback: CallbackQuery):
+    await safe_delete(callback.message)
+    text = (
+        "💸 <b>Почему цены могут быть ниже?</b>\n\n"
+        "Итоговая цена зависит от текущего рыночного курса, выбранного способа покупки или передачи, "
+        "комиссий сети и действующих предложений. Перед подтверждением заявки бот показывает сумму к оплате — "
+        "пожалуйста, внимательно проверьте её, выбранную валюту и сеть.\n\n"
+        "Используйте только активы, приобретённые законным путём и находящиеся в вашем распоряжении. "
+        "Не отправляйте оплату, если сумма или реквизиты в заявке отличаются от ожидаемых; в таком случае "
+        f"сначала уточните детали у поддержки @{SUPPORT_USERNAME}.\n\n"
+        "Если у вас возник вопрос по заявке или срокам исполнения, обратитесь в поддержку и укажите номер заказа."
+    )
+    await callback.message.answer(text, reply_markup=faq_back_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "faq_terms")
+async def faq_terms(callback: CallbackQuery):
+    await safe_delete(callback.message)
+    await callback.message.answer(build_terms_text(), reply_markup=faq_back_keyboard())
+    await callback.answer()
+
+
+@router.callback_query(F.data == "faq_ads")
+async def faq_ads(callback: CallbackQuery):
+    await safe_delete(callback.message)
+    text = (
+        "📢 <b>Реклама в боте</b>\n\n"
+        "Принимаем заявки на размещение рекламы и рассматриваем разные тематики. Не размещаем рекламу казино, "
+        "наркошопов, мошеннических схем и обманных предложений, а также незаконных товаров и услуг.\n\n"
+        "В заявке укажите тематику, желаемые даты, формат и ссылку или пример рекламного материала. "
+        "Возможность размещения, стоимость и условия публикации согласуются заранее.\n\n"
+        f"Все вопросы по рекламе обсуждаются в чате поддержки: @{SUPPORT_USERNAME}"
+    )
+    await callback.message.answer(text, reply_markup=faq_back_keyboard())
+    await callback.answer()
+
+
 @router.callback_query(F.data == "ref_profile")
 async def ref_profile(callback: CallbackQuery):
     await safe_delete(callback.message)
@@ -406,6 +487,83 @@ async def ref_profile(callback: CallbackQuery):
     except FileNotFoundError:
         await callback.message.answer(ref_text, reply_markup=profile_keyboard())
     await callback.answer()
+
+
+@router.callback_query(F.data == "coupon_start")
+async def coupon_start(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await safe_delete(callback.message)
+    text = (
+        "🎟 <b>Использование купона</b>\n"
+        "━━━━━━━━━━━━━━━━━━━━\n\n"
+        "Активируйте купон, чтобы пополнить рублёвый баланс профиля. После успешной проверки сумма, указанная "
+        "для этого купона, будет зачислена на ваш счёт.\n\n"
+        "📣 <b>Где получить купон?</b>\n"
+        "Новые купоны и условия их активации публикуются в нашем информационном канале: "
+        "<a href=\"https://t.me/CryptoInverseOfficial\">@CryptoInverseOfficial</a>. Проверяйте код и срок его "
+        "действия в публикации канала.\n\n"
+        "📝 <b>Как активировать:</b>\n"
+        "1. Скопируйте код купона целиком.\n"
+        "2. Отправьте его следующим сообщением в этот чат.\n"
+        "3. Дождитесь ответа о результате проверки и зачислении средств.\n\n"
+        "ℹ️ Каждый купон можно использовать только один раз. Если код введён с ошибкой, отправьте его ещё раз "
+        "точно как в публикации. При проблеме с активацией напишите в поддержку и приложите текст ошибки.\n\n"
+        "Отправьте код купона сообщением ниже."
+    )
+    await callback.message.answer(text, reply_markup=coupon_cancel_keyboard())
+    await state.set_state(CouponStates.waiting_code)
+    await callback.answer()
+
+
+@router.callback_query(F.data == "coupon_cancel")
+async def coupon_cancel(callback: CallbackQuery, state: FSMContext):
+    await state.clear()
+    await ref_profile(callback)
+
+
+@router.message(CouponStates.waiting_code)
+async def coupon_redeem(message: Message, state: FSMContext):
+    code = (message.text or "").strip()
+    if not code or len(code) > 120:
+        await message.answer(
+            "❌ Отправьте текстовый код купона из информационного канала.",
+            reply_markup=coupon_cancel_keyboard()
+        )
+        return
+
+    coupons = read_coupons()
+    coupon = coupons.get(code.casefold())
+    if coupon is None:
+        await message.answer(
+            "❌ Купон не найден или его формат не распознан. Проверьте код в канале "
+            "@CryptoInverseOfficial и отправьте его ещё раз.",
+            reply_markup=coupon_cancel_keyboard()
+        )
+        return
+
+    coupon_code, amount_rub = coupon
+    new_balance = redeem_coupon(message.from_user.id, coupon_code, amount_rub)
+    if new_balance is False:
+        await message.answer(
+            "⚠️ Этот купон уже был активирован и повторно использовать его нельзя.",
+            reply_markup=coupon_cancel_keyboard()
+        )
+        return
+    if new_balance is None:
+        await message.answer(
+            "Не удалось найти ваш профиль. Отправьте команду /start и попробуйте снова.",
+            reply_markup=coupon_cancel_keyboard()
+        )
+        return
+
+    await state.clear()
+    await message.answer(
+        "✅ <b>Купон успешно активирован!</b>\n\n"
+        f"Зачислено на баланс: <b>{amount_rub:,.2f} ₽</b>\n"
+        f"Текущий баланс профиля: <b>{new_balance:,.2f} ₽</b>\n\n"
+        "Откройте профиль, чтобы посмотреть баланс и использовать его для оплаты заказа.",
+        reply_markup=profile_keyboard()
+    )
 
 
 # ========== ЗАКАЗЫ ==========
@@ -915,7 +1073,7 @@ async def stars_choose_method(callback: CallbackQuery, state: FSMContext):
     await safe_delete(loading)
     await callback.message.answer(
         "Введите количество Telegram Stars, которое хотите купить "
-        "(целое число, минимум 1000):"
+        "(целое число, минимум 2000):"
     )
     await state.set_state(StarsStates.waiting_amount)
 
@@ -924,10 +1082,10 @@ async def stars_choose_method(callback: CallbackQuery, state: FSMContext):
 async def stars_amount(message: Message, state: FSMContext):
     try:
         amount = int((message.text or "").strip())
-        if amount < 1000 or amount > 1000000:
+        if amount < 2000 or amount > 1000000:
             raise ValueError
     except ValueError:
-        await message.answer("Минимальный заказ — 1000 звёзд. Введите целое число от 1000 до 1 000 000.")
+        await message.answer("Минимальный заказ — 2000 звёзд. Введите целое число от 2000 до 1 000 000.")
         return
     data = await state.get_data()
     total = amount * float(data["stars_rate"])
@@ -1064,12 +1222,14 @@ async def buy_process_amount(message: Message, state: FSMContext):
     total_usd = price_usd * Decimal(str(amount))
     total_rub = price_rub * Decimal(str(amount))
 
-    if total_usd < Decimal(str(MIN_USD)) or total_rub < Decimal(str(MIN_RUB)):
+    min_buy_usd = MIN_BUY_TRX_USD if currency == "TRX" else MIN_BUY_USD
+    min_buy_rub = MIN_BUY_TRX_RUB if currency == "TRX" else MIN_BUY_RUB
+    if total_usd < Decimal(str(min_buy_usd)) and total_rub < Decimal(str(min_buy_rub)):
         await message.answer(
             "⚠️ <b>Минимальная сумма покупки</b>\n\n"
             f"Вы пытаетесь купить <b>{amount} {currency}</b>, что составляет:\n"
             f"💵 ${total_usd:,.2f}\n💴 {total_rub:,.2f} ₽\n\n"
-            f"❌ Минимум: <b>${MIN_USD}</b> или <b>{MIN_RUB} ₽</b>\n\n"
+            f"❌ Минимум: <b>${min_buy_usd}</b> или <b>{min_buy_rub} ₽</b>\n\n"
             f"Введите другое количество:"
         )
         return
@@ -1161,6 +1321,53 @@ async def buy_process_payment(callback: CallbackQuery, state: FSMContext):
     method = callback.data.replace("pay_", "")
     await state.update_data(payment_method=method)
     state_data = await state.get_data()
+
+    if method == "balance":
+        order_number = state_data.get("stars_order") or state_data.get("order_number")
+        result = pay_order_with_balance(order_number or "", callback.from_user.id)
+        if result["status"] == "insufficient":
+            await callback.message.answer(
+                "❌ <b>Недостаточно средств на балансе профиля.</b>\n\n"
+                f"К оплате: <b>{result['amount_rub']:,.2f} ₽</b>\n"
+                f"На балансе: <b>{result['balance_rub']:,.2f} ₽</b>\n\n"
+                "Выберите другой способ оплаты или пополните баланс в профиле, затем начните оплату заказа снова.",
+                reply_markup=payment_methods()
+            )
+            await callback.answer()
+            return
+        if result["status"] != "paid":
+            await callback.message.answer(
+                "Не удалось оплатить этот заказ с баланса. Откройте заказ заново или обратитесь в поддержку.",
+                reply_markup=support_button()
+            )
+            await callback.answer()
+            return
+
+        order = result["order"]
+        currency = str(order["currency"] or "")
+        if currency.startswith("TG_STARS_"):
+            recipient = htmlmod.escape(str(order["wallet_address"] or "не указан"))
+            order_description = f"{int(float(order['amount'] or 0))} Telegram Stars, получатель @{recipient.lstrip('@')}"
+            delivery_note = "Чтобы получить Telegram Stars, напишите в поддержку и укажите номер заказа и username получателя."
+        else:
+            coin_name = COIN_NAMES.get(currency, currency)
+            recipient = htmlmod.escape(str(order["wallet_address"] or "не указан"))
+            order_description = f"{order['amount']} {htmlmod.escape(coin_name)}, кошелёк {recipient}"
+            delivery_note = "Чтобы получить криптовалюту, напишите в поддержку и укажите номер заказа."
+
+        await state.clear()
+        await callback.message.answer(
+            "✅ <b>Средства списаны с баланса профиля.</b>\n\n"
+            f"Заказ: <code>{htmlmod.escape(str(order['order_number']))}</code>\n"
+            f"Покупка: <b>{order_description}</b>\n"
+            f"Списано: <b>{result['amount_rub']:,.2f} ₽</b>\n"
+            f"Остаток на балансе: <b>{result['balance_rub']:,.2f} ₽</b>\n\n"
+            f"{delivery_note} @{SUPPORT_USERNAME}.",
+            reply_markup=support_button()
+        )
+        await callback.answer()
+        return
+
     if state_data.get("stars_order"):
         method_info = PAYMENT_DETAILS.get(method, {})
         update_order_data(state_data["stars_order"], payment_method=method_info.get("title", method))
